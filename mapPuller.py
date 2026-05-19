@@ -6,6 +6,7 @@ import argparse
 import math
 from collections import defaultdict
 from PIL import Image
+from tqdm import tqdm  # <-- Added tqdm
 
 def deg2num(lat_deg, lon_deg, zoom):
     """Converts Latitude/Longitude to standard slippy map X and Y tile coordinates."""
@@ -19,19 +20,13 @@ def deg2num(lat_deg, lon_deg, zoom):
 parser = argparse.ArgumentParser(description="Scrape, download, and stitch OS map tiles using Lat/Lon or X/Y.")
 
 parser.add_argument("--zoom", type=int, default=15, help="Zoom level (default: 15)")
-
-# Coordinate based targeting
 parser.add_argument("--lat", type=float, help="Center Latitude (e.g., 50.88074)")
 parser.add_argument("--lon", type=float, help="Center Longitude (e.g., -0.21368)")
 parser.add_argument("--radius", type=int, default=10, help="If using Lat/Lon, how many tiles in each direction to fetch (default: 10)")
-
-# Manual X/Y targeting (Fallbacks)
 parser.add_argument("--x-start", type=int, default=16354, help="Starting X coordinate (if not using lat/lon)")
 parser.add_argument("--x-end", type=int, default=16374, help="Ending X coordinate (if not using lat/lon)")
 parser.add_argument("--y-start", type=int, default=10977, help="Starting Y coordinate (if not using lat/lon)")
 parser.add_argument("--y-end", type=int, default=10997, help="Ending Y coordinate (if not using lat/lon)")
-
-# File system and script configuration
 parser.add_argument("--log-file", type=str, default="successful_tile_urls.txt", help="Log file path")
 parser.add_argument("--tile-dir", type=str, default="downloaded_tiles", help="Directory to save downloaded tiles")
 parser.add_argument("--output-dir", type=str, default="stitched_chunks", help="Directory to save stitched chunks")
@@ -44,18 +39,15 @@ args = parser.parse_args()
 # --- Configuration & Logic Routing ---
 ZOOM_LEVEL = args.zoom
 
-# Determine bounding box based on Lat/Lon OR explicit X/Y
 if args.lat is not None and args.lon is not None:
     center_x, center_y = deg2num(args.lat, args.lon, ZOOM_LEVEL)
     print(f"Calculated central tile for [{args.lat}, {args.lon}] at Zoom {ZOOM_LEVEL}: X:{center_x}, Y:{center_y}")
     
-    # Create a bounding box around the central tile based on the radius
     X_START = center_x - args.radius
-    X_END = center_x + args.radius + 1  # +1 because Python range() is exclusive at the end
+    X_END = center_x + args.radius + 1
     Y_START = center_y - args.radius
     Y_END = center_y + args.radius + 1
 else:
-    # Fallback to manual X/Y inputs
     X_START, X_END = args.x_start, args.x_end 
     Y_START, Y_END = args.y_start, args.y_end
 
@@ -66,7 +58,6 @@ TILE_SIZE = args.tile_size
 MAX_WORKERS = args.max_workers
 CHUNK_SIZE = args.chunk_size 
 
-# Global session for connection pooling
 session = requests.Session()
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -101,14 +92,15 @@ def find_latest_tile(coords):
         try:
             response = session.head(url, timeout=5)
             if response.status_code == 200:
-                print(f"[FOUND] {url}")
                 log_url_to_file(url)
                 return (x, y, map_date)
             elif response.status_code == 429:
-                print(f"[WARNING] Rate Limited (429) at x:{x} y:{y}. Server is blocking us.")
+                # Use tqdm.write so we don't break the progress bar UI
+                tqdm.write(f"[WARNING] Rate Limited (429) at x:{x} y:{y}. Server is blocking us.")
         except requests.exceptions.RequestException:
             pass
-    print(f"[MISSING] x:{x} y:{y}  -->  Not found in any dates.")
+            
+    tqdm.write(f"[MISSING] x:{x} y:{y}  -->  Not found in any dates.")
     return (x, y, None)
 
 def setup_directories():
@@ -147,7 +139,6 @@ def download_tile(tile_info):
         if response.status_code == 200:
             with open(filepath, 'wb') as f:
                 f.write(response.content)
-            print(f"[DOWNLOADED] {x}_{y}.png")
             return (x, y, filepath)
     except Exception:
         pass
@@ -155,17 +146,16 @@ def download_tile(tile_info):
 
 def stitch_in_chunks(valid_tiles):
     """Groups tiles into smaller grids and stitches multiple PNGs."""
-    print(f"\nGrouping {len(valid_tiles)} tiles into chunks of {CHUNK_SIZE}x{CHUNK_SIZE}...")
-    
     chunks = defaultdict(list)
     for x, y, filepath in valid_tiles:
         chunk_x = x // CHUNK_SIZE
         chunk_y = y // CHUNK_SIZE
         chunks[(chunk_x, chunk_y)].append((x, y, filepath))
         
-    print(f"Created {len(chunks)} separate image chunks to stitch.\n")
+    print(f"\nCreated {len(chunks)} separate image chunk(s) to stitch.")
 
-    for (cx, cy), chunk_tiles in chunks.items():
+    # Added tqdm to chunk stitching
+    for (cx, cy), chunk_tiles in tqdm(chunks.items(), desc="Stitching Chunks", unit="chunk"):
         min_x = min(t[0] for t in chunk_tiles)
         max_x = max(t[0] for t in chunk_tiles)
         min_y = min(t[1] for t in chunk_tiles)
@@ -177,7 +167,6 @@ def stitch_in_chunks(valid_tiles):
         filename = f"map_X{min_x}-{max_x}_Y{min_y}-{max_y}.png"
         output_path = os.path.join(OUTPUT_DIR, filename)
         
-        print(f"Stitching {filename} ({width_px}x{height_px} px)...")
         canvas = Image.new('RGBA', (width_px, height_px), (0, 0, 0, 0))
         
         for x, y, filepath in chunk_tiles:
@@ -189,10 +178,9 @@ def stitch_in_chunks(valid_tiles):
                         paste_y = (y - min_y) * TILE_SIZE
                         canvas.paste(tile_img, (paste_x, paste_y))
                 except Exception as e:
-                    print(f"  -> Error pasting {filepath}: {e}")
+                    tqdm.write(f"  -> Error pasting {filepath}: {e}")
                     
         canvas.save(output_path)
-        print(f"Saved to {output_path}")
 
 if __name__ == "__main__":
     with open(LOG_FILE, "w") as f:
@@ -209,29 +197,29 @@ if __name__ == "__main__":
     
     total_tiles = (X_END - X_START) * (Y_END - Y_START)
     print(f"Checking {total_tiles:,} coordinates concurrently...")
-    print(f"Results will be saved in real-time to '{LOG_FILE}'\n")
+    print(f"Results are saving in real-time to '{LOG_FILE}'\n")
 
-    # Step 1: Locate Images
+    # Step 1: Locate Images (With Progress Bar)
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results = executor.map(find_latest_tile, tiles_to_check)
-        for result in results:
+        # Wrap the results in tqdm to monitor the queue depletion
+        for result in tqdm(results, total=total_tiles, desc="Scanning Grid", unit="tile"):
             pass 
                 
-    print(f"\nFinished scanning. Check '{LOG_FILE}' for successful URLs.")
-    
     tiles = parse_urls_from_log()
-    print(f"Found {len(tiles)} tiles in log file.")
+    print(f"\nFound {len(tiles)} available tiles in log file.")
     
-    # Step 2: Download Images
-    print("\nStarting downloads...")
+    # Step 2: Download Images (With Progress Bar)
     valid_tiles = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        results = executor.map(download_tile, tiles)
-        for result in results:
-            if result:
-                valid_tiles.append(result)
+    if tiles:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            results = executor.map(download_tile, tiles)
+            # Wrap downloads in tqdm
+            for result in tqdm(results, total=len(tiles), desc="Downloading", unit="tile"):
+                if result:
+                    valid_tiles.append(result)
                 
-    # Step 3: Group and Stitch
+    # Step 3: Group and Stitch (With Progress Bar inside function)
     if valid_tiles:
         stitch_in_chunks(valid_tiles)
         print("\nAll chunking and stitching complete!")
