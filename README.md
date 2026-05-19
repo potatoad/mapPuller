@@ -10,7 +10,8 @@ Instead of blindly downloading tiles, this script intelligently checks for a til
 * **Coordinate Support:** Target areas using explicit slippy map `X/Y` grids, or standard `Latitude/Longitude` with a tile radius.
 * **Safe State Logging:** Successfully located tile URLs are logged to a text file in real-time. If the script crashes, you don't lose your scan progress.
 * **Smart Chunking:** Stitches thousands of small 256x256 PNGs into large regional map chunks (e.g., 50x50 grids) to prevent memory overflow and computer crashes.
-* **Transparent Backgrounds:** Missing tiles are rendered as transparent (`RGBA`) rather than solid blocks, preserving perfect geographical alignment.
+* **Transparent Backgrounds:** Missing tiles are rendered as transparent (`RGBA`) rather than solid blocks, preserving perfect geographical alignment (where applicable).
+* **FIle Format Options:** Stitched images can be exported in PNG, JPEG, and lossless WebP formats.
 
 ## Prerequisites
 
@@ -18,7 +19,7 @@ You will need Python 3.7+ installed.
 Install the required dependencies using pip:
 
 ```bash
-pip install requests Pillow
+pip install -r requirements.txt
 
 ```
 
@@ -61,6 +62,7 @@ python map_scraper.py --lat 51.5074 --lon -0.1278 --max-workers 30 --chunk-size 
 | Argument | Type | Default | Description |
 | --- | --- | --- | --- |
 | `--zoom` | `int` | `15` | Map zoom level. Higher = closer. |
+| `--scale` | `[25, 50]` | `25` | Map scale. Either 1:25,000 or 1:50,000. |
 | `--lat` | `float` | `None` | Central Latitude coordinate (e.g., 51.5074). |
 | `--lon` | `float` | `None` | Central Longitude coordinate (e.g., -0.1278). |
 | `--radius` | `int` | `10` | If using Lat/Lon, how many tiles in each direction to fetch. |
@@ -73,6 +75,7 @@ python map_scraper.py --lat 51.5074 --lon -0.1278 --max-workers 30 --chunk-size 
 | `--log-file` | `string` | `successful_tile_urls.txt` | File path to log discovered URLs. |
 | `--tile-dir` | `string` | `downloaded_tiles/` | Folder to save individual downloaded PNGs. |
 | `--output-dir` | `string` | `stitched_chunks/` | Folder to save the final stitched PNG grids. |
+| `--format` | `["png", "jpeg", "webp"]` | `png` | File format for the saved stitched image. |
 
 ---
 
@@ -81,6 +84,7 @@ python map_scraper.py --lat 51.5074 --lon -0.1278 --max-workers 30 --chunk-size 
 1. **Scan & Log:** The script generates a queue of URLs. It pings the server using an HTTP `HEAD` request. If it receives a `200 OK`, it logs the URL to `--log-file` and stops checking that coordinate. If it receives a `404`, it checks the previous month.
 2. **Download:** It reads the generated text log and downloads all valid URLs into the `--tile-dir` folder. Skips files that already exist on disk.
 3. **Group & Stitch:** It mathematically groups the downloaded tiles into distinct grids (defined by `--chunk-size`). It stitches these smaller chunks together and saves them to the `--output-dir`.
+4. **Cleanup:** It removes the log file.
 
 ---
 

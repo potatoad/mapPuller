@@ -4,9 +4,10 @@ import concurrent.futures
 import threading
 import argparse
 import math
+import codecs
 from collections import defaultdict
 from PIL import Image
-from tqdm import tqdm  # <-- Added tqdm
+from tqdm import tqdm
 
 def deg2num(lat_deg, lon_deg, zoom):
     """Converts Latitude/Longitude to standard slippy map X and Y tile coordinates."""
@@ -33,11 +34,15 @@ parser.add_argument("--output-dir", type=str, default="stitched_chunks", help="D
 parser.add_argument("--tile-size", type=int, default=256, help="Tile size in pixels (default: 256)")
 parser.add_argument("--max-workers", type=int, default=15, help="Maximum concurrent threads (default: 15)")
 parser.add_argument("--chunk-size", type=int, default=50, help="Grid size for stitched chunks. 50 = 50x50 tiles (default: 50)")
+parser.add_argument("--scale", choices=["25", "50"], default="25", help="Map scale to download tiles for. 25 = 1:25,000 and 50 = 1:50,000 (default: 25)")
+parser.add_argument("--format", choices=["webp", "png", "jpeg"], default="png", help="Output image format (default: png)")
 
 args = parser.parse_args()
 
 # --- Configuration & Logic Routing ---
 ZOOM_LEVEL = args.zoom
+SCALE = args.scale
+FORMAT = args.format.upper()
 
 if args.lat is not None and args.lon is not None:
     center_x, center_y = deg2num(args.lat, args.lon, ZOOM_LEVEL)
@@ -50,13 +55,17 @@ if args.lat is not None and args.lon is not None:
 else:
     X_START, X_END = args.x_start, args.x_end 
     Y_START, Y_END = args.y_start, args.y_end
+    X_CENTRE, Y_CENTRE = (X_START + X_END) // 2, (Y_START + Y_END) // 2
+
 
 LOG_FILE = args.log_file
 TILE_DIR = args.tile_dir
 OUTPUT_DIR = args.output_dir
 TILE_SIZE = args.tile_size
 MAX_WORKERS = args.max_workers
-CHUNK_SIZE = args.chunk_size 
+CHUNK_SIZE = args.chunk_size
+
+API_URL = codecs.decode("uggcf://gvyrf.yrvfher.zncf.bfvasen.arg", "rot13")
 
 session = requests.Session()
 session.headers.update({
@@ -85,17 +94,26 @@ def generate_date_list(start_year, start_month, end_year, end_month):
     return dates
 
 def find_latest_tile(coords):
-    """Worker function: Checks dates backwards, logs URL if found, and returns."""
+    """Worker function: Checks cache, then checks dates backwards, logs URL if found, and returns."""
     x, y, dates_to_check = coords
+    
+    # --- NEW: Check if we already have this file on disk ---
+    filepath = os.path.join(TILE_DIR, f"{x}_{y}_1_{SCALE}k.png")
+    if os.path.exists(filepath):
+        # Log a dummy URL so the parser grabs the X and Y for stitching, but we avoid network calls
+        dummy_url = f"LOCAL_CACHE/skip_download/{x}_{y}_1_{SCALE}k.png"
+        log_url_to_file(dummy_url)
+        return (x, y, "CACHED")
+    
+    # If not cached, proceed with network checks
     for map_date in dates_to_check:
-        url = f"https://tiles.leisure.maps.osinfra.net/{map_date}/1_25k/{ZOOM_LEVEL}/{x}/{y}.png"
+        url = f"https://tiles.leisure.maps.osinfra.net/{map_date}/1_{SCALE}k/{ZOOM_LEVEL}/{x}/{y}.png"
         try:
             response = session.head(url, timeout=5)
             if response.status_code == 200:
                 log_url_to_file(url)
                 return (x, y, map_date)
             elif response.status_code == 429:
-                # Use tqdm.write so we don't break the progress bar UI
                 tqdm.write(f"[WARNING] Rate Limited (429) at x:{x} y:{y}. Server is blocking us.")
         except requests.exceptions.RequestException:
             pass
@@ -130,9 +148,13 @@ def parse_urls_from_log():
 def download_tile(tile_info):
     """Downloads a single tile if it hasn't been downloaded yet."""
     x, y, url = tile_info
-    filepath = os.path.join(TILE_DIR, f"{x}_{y}.png")
+    filepath = os.path.join(TILE_DIR, f"{x}_{y}_1_{SCALE}k.png")
+    
+    # Because find_latest_tile logs a dummy URL for cached files, this check 
+    # triggers immediately and safely skips the requests.get() step.
     if os.path.exists(filepath):
         return (x, y, filepath)
+        
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers, timeout=10)
@@ -154,7 +176,6 @@ def stitch_in_chunks(valid_tiles):
         
     print(f"\nCreated {len(chunks)} separate image chunk(s) to stitch.")
 
-    # Added tqdm to chunk stitching
     for (cx, cy), chunk_tiles in tqdm(chunks.items(), desc="Stitching Chunks", unit="chunk"):
         min_x = min(t[0] for t in chunk_tiles)
         max_x = max(t[0] for t in chunk_tiles)
@@ -164,10 +185,22 @@ def stitch_in_chunks(valid_tiles):
         width_px = ((max_x - min_x) + 1) * TILE_SIZE
         height_px = ((max_y - min_y) + 1) * TILE_SIZE
         
-        filename = f"map_X{min_x}-{max_x}_Y{min_y}-{max_y}.png"
+        def generate_filename(args, SCALE, ZOOM_LEVEL, cx, cy, FORMAT, X_CENTRE=None, Y_CENTRE=None):
+            if args.lat is not None and args.lon is not None:
+                return (
+                    f"map_lat{args.lat}_lon{args.lon}_1_{SCALE}k_z{ZOOM_LEVEL}_r{args.radius}_"
+                    f"X{cx}_Y{cy}.{FORMAT.lower()}"
+                )
+            else:
+                return (
+                    f"map_x{X_CENTRE}_y{Y_CENTRE}_1_{SCALE}k_z{ZOOM_LEVEL}_r{args.radius}_"
+                    f"X{cx}_Y{cy}.{FORMAT.lower()}"
+                )
+
+        filename = generate_filename(args, SCALE, ZOOM_LEVEL, cx, cy, FORMAT, X_CENTRE if 'X_CENTRE' in globals() else None, Y_CENTRE if 'Y_CENTRE' in globals() else None)
         output_path = os.path.join(OUTPUT_DIR, filename)
         
-        canvas = Image.new('RGBA', (width_px, height_px), (0, 0, 0, 0))
+        canvas = Image.new('RGB' if FORMAT == "JPEG" else 'RGBA', (width_px, height_px), (0, 0, 0, 0))
         
         for x, y, filepath in chunk_tiles:
             if os.path.exists(filepath):
@@ -179,13 +212,14 @@ def stitch_in_chunks(valid_tiles):
                         canvas.paste(tile_img, (paste_x, paste_y))
                 except Exception as e:
                     tqdm.write(f"  -> Error pasting {filepath}: {e}")
-                    
-        canvas.save(output_path)
+    
+        canvas.save(output_path, FORMAT, lossless=1 if FORMAT == "WEBP" else None)
 
 if __name__ == "__main__":
+    setup_directories()
+    
     with open(LOG_FILE, "w") as f:
         f.write(f"--- Tile Scan Started ---\n")
-    setup_directories()
     
     dates = generate_date_list(2025, 12, 2015, 1)
     
@@ -202,24 +236,32 @@ if __name__ == "__main__":
     # Step 1: Locate Images (With Progress Bar)
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         results = executor.map(find_latest_tile, tiles_to_check)
-        # Wrap the results in tqdm to monitor the queue depletion
         for result in tqdm(results, total=total_tiles, desc="Scanning Grid", unit="tile"):
             pass 
                 
     tiles = parse_urls_from_log()
-    print(f"\nFound {len(tiles)} available tiles in log file.")
+    print(f"\nFound {len(tiles)} available tiles.")
     
     # Step 2: Download Images (With Progress Bar)
     valid_tiles = []
     if tiles:
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             results = executor.map(download_tile, tiles)
-            # Wrap downloads in tqdm
             for result in tqdm(results, total=len(tiles), desc="Downloading", unit="tile"):
                 if result:
                     valid_tiles.append(result)
                 
-    # Step 3: Group and Stitch (With Progress Bar inside function)
+    # Step 3: Group and Stitch
     if valid_tiles:
         stitch_in_chunks(valid_tiles)
-        print("\nAll chunking and stitching complete!")
+        
+    # --- NEW: Step 4: Cleanup ---
+    print("\nCleaning up temporary files...")
+    if os.path.exists(LOG_FILE):
+        try:
+            os.remove(LOG_FILE)
+            print(f"Removed log file: {LOG_FILE}")
+        except Exception as e:
+            print(f"Could not remove {LOG_FILE}: {e}")
+
+    print("\nAll tasks complete!")
