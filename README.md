@@ -5,13 +5,15 @@ Instead of blindly downloading tiles, this script intelligently checks for a til
 
 ## Features
 
-* **Smart Fallback:** Checks historical map dates (from present back to 2015) if a tile is missing.
+* **Interactive Mode:** Run without arguments for a guided CLI setup experience, or use command-line arguments for scripting.
+* **Multiple Map Series:** Choose from 11 different map series including modern OS maps, 1-inch historical editions, Bartholomew maps, agriculture maps, and more.
+* **Smart Fallback:** For OS 1:25k and OS 1:50k series, checks historical map dates (from present back to 2015) if a tile is missing.
 * **Concurrent Processing:** Utilizes connection pooling and ThreadPoolExecutor to check and download hundreds of tiles per second.
 * **Coordinate Support:** Target areas using explicit slippy map `X/Y` grids, or standard `Latitude/Longitude` with a tile radius.
 * **Safe State Logging:** Successfully located tile URLs are logged to a text file in real-time. If the script crashes, you don't lose your scan progress.
 * **Smart Chunking:** Stitches thousands of small 256x256 PNGs into large regional map chunks (e.g., 50x50 grids) to prevent memory overflow and computer crashes.
 * **Transparent Backgrounds:** Missing tiles are rendered as transparent (`RGBA`) rather than solid blocks, preserving perfect geographical alignment (where applicable).
-* **FIle Format Options:** Stitched images can be exported in PNG, JPEG, and lossless WebP formats.
+* **File Format Options:** Stitched images can be exported in PNG, JPEG, and lossless WebP formats.
 
 ## Prerequisites
 
@@ -25,15 +27,32 @@ pip install -r requirements.txt
 
 ## Usage
 
-The script is entirely configurable via command-line arguments. You can run it using real-world coordinates (Latitude/Longitude) or by defining an explicit mathematical X/Y bounding box.
+### Interactive Mode (Recommended for New Users)
+
+Run the script without any arguments to enter an interactive CLI menu that will guide you through all configuration options:
+
+```bash
+python3 mapPuller.py
+```
+
+This will prompt you to:
+- Choose a map series (11 options including modern OS maps and historical editions)
+- Select zoom level
+- Specify the map area (Latitude/Longitude with radius, or X/Y coordinates)
+- Choose output format (PNG, WebP, JPEG)
+- Configure performance options
+
+### Command-Line Mode (Advanced Users)
+
+Alternatively, you can provide all arguments directly via the command line for scripting and automation.
 
 ### Example 1: Target via Latitude and Longitude (Recommended)
 
 Provide a central coordinate and a radius. The script will automatically calculate the bounding box.
-*Example: Center on London, Zoom Level 16, grabbing 20 tiles in every direction.*
+*Example: Center on Brighton, Zoom Level 16, grabbing 10 tiles in every direction with OS 1:25k maps.*
 
 ```bash
-python map_scraper.py --lat 51.5074 --lon -0.1278 --zoom 16 --radius 20
+python3 mapPuller.py --series os25k --lat 50.82854 --lon -0.14001 --zoom 16 --radius 10
 
 ```
 
@@ -42,18 +61,52 @@ python map_scraper.py --lat 51.5074 --lon -0.1278 --zoom 16 --radius 20
 Manually define the exact slippy map coordinates you want to scrape.
 
 ```bash
-python map_scraper.py --x-start 32000 --x-end 32050 --y-start 21000 --y-end 21050 --zoom 15
+python3 mapPuller.py --series os50k --x-start 16354 --x-end 16374 --y-start 10977 --y-end 10997 --zoom 15
 
 ```
 
-### Example 3: Performance Tuning
+### Example 3: Using 6-inch Historical Maps
+
+Download from historical map series:
+
+```bash
+# 6-inch Second Edition
+python3 mapPuller.py --series 6inch2nd --lat 50.82854 --lon -0.14001 --zoom 16 --radius 15
+
+# 1-inch Third Edition
+python3 mapPuller.py --series 1inch3rd --lat 50.82854 --lon -0.14001 --zoom 16 --radius 15
+
+# Agriculture Land Use (1960-70)
+python3 mapPuller.py --series agri-1960-70 --lat 50.82854 --lon -0.14001 --zoom 16 --radius 15
+
+```
+
+### Example 4: Performance Tuning
 
 Increase the number of worker threads for faster downloading, and change the output image dimensions.
 
 ```bash
-python map_scraper.py --lat 51.5074 --lon -0.1278 --max-workers 30 --chunk-size 100
+python3 mapPuller.py --series os25k --lat 50.82854 --lon -0.14001 --max-workers 30 --chunk-size 100
 
 ```
+
+---
+
+## Available Map Series
+
+| Series ID | Name | Type | Notes |
+| --- | --- | --- | --- |
+| `os25k` | OS 1:25,000 | Modern | Checks historical dates back to 2015 |
+| `os50k` | OS 1:50,000 | Modern | Checks historical dates back to 2015 |
+| `6inch2nd` | 6-inch Second Edition | Historical | Historical mapping, no date fallback |
+| `1inch2nd` | 1-inch Second Edition (Revised) | Historical | Revised edition of 1-inch maps |
+| `1inch3rd` | 1-inch Third Edition (Colored) | Historical | Colored 1-inch maps |
+| `bart` | Bartholomew England & Wales (1920s) | Historical | Bartholomew publisher maps |
+| `os25k-1937-61` | OS 1:25,000 (1937-1961) | Historical | Post-WWII OS maps |
+| `os1in-1919-26` | OS 1-inch Popular Edition (1919-26) | Historical | Early 20th century OS maps |
+| `os1in-1945-47` | OS 1-inch New Popular Edition (1945-47) | Historical | Post-WWII 1-inch OS maps |
+| `agri-1960-70` | Agricultural Land Use (1960-70) | Historical | Agricultural classification maps |
+| `os50k-1974` | OS 50,000 (1974) | Historical | 1974 OS 1:50,000 maps |
 
 ---
 
@@ -61,15 +114,15 @@ python map_scraper.py --lat 51.5074 --lon -0.1278 --max-workers 30 --chunk-size 
 
 | Argument | Type | Default | Description |
 | --- | --- | --- | --- |
+| `--series` | `[os25k, os50k, 6inch2nd, 1inch2nd, 1inch3rd, bart, os25k-1937-61, os1in-1919-26, os1in-1945-47, agri-1960-70, os50k-1974]` | `os25k` | Map series to download. See "Available Map Series" table for details. Modern OS series check historical dates; historical series use direct URLs. |
 | `--zoom` | `int` | `15` | Map zoom level. Higher = closer. |
-| `--scale` | `[25, 50]` | `25` | Map scale. Either 1:25,000 or 1:50,000. |
-| `--lat` | `float` | `None` | Central Latitude coordinate (e.g., 51.5074). |
-| `--lon` | `float` | `None` | Central Longitude coordinate (e.g., -0.1278). |
+| `--lat` | `float` | `None` | Central Latitude coordinate (e.g., 50.82854). |
+| `--lon` | `float` | `None` | Central Longitude coordinate (e.g., -0.14001). |
 | `--radius` | `int` | `10` | If using Lat/Lon, how many tiles in each direction to fetch. |
-| `--x-start` | `int` | `16183` | Starting X coordinate (used if Lat/Lon is omitted). |
-| `--x-end` | `int` | `16196` | Ending X coordinate (exclusive). |
-| `--y-start` | `int` | `10986` | Starting Y coordinate (used if Lat/Lon is omitted). |
-| `--y-end` | `int` | `10999` | Ending Y coordinate (exclusive). |
+| `--x-start` | `int` | `16354` | Starting X coordinate (used if Lat/Lon is omitted). |
+| `--x-end` | `int` | `16374` | Ending X coordinate (exclusive). |
+| `--y-start` | `int` | `10977` | Starting Y coordinate (used if Lat/Lon is omitted). |
+| `--y-end` | `int` | `10997` | Ending Y coordinate (exclusive). |
 | `--max-workers` | `int` | `15` | Number of concurrent threads. **Warning: See rate limits.** |
 | `--chunk-size` | `int` | `50` | Grid size for stitched PNGs. (50 = 50x50 tiles per image). |
 | `--log-file` | `string` | `successful_tile_urls.txt` | File path to log discovered URLs. |
