@@ -7,6 +7,7 @@ Instead of blindly downloading tiles, this script intelligently checks for a til
 
 * **Interactive Mode:** Run without arguments for a guided CLI setup experience, or use command-line arguments for scripting.
 * **Multiple Map Series:** Choose from 11 different map series including modern OS maps, 1-inch historical editions, Bartholomew maps, agriculture maps, and more.
+* **Place Name Search:** Use the Geocoding API to convert UK a place name or address into latitude and longitude.
 * **Smart Fallback:** For OS 1:25k and OS 1:50k series, checks historical map dates (from present back to 2015) if a tile is missing.
 * **Concurrent Processing:** Utilizes connection pooling and ThreadPoolExecutor to check and download hundreds of tiles per second.
 * **Coordinate Support:** Target areas using explicit slippy map `X/Y` grids, or standard `Latitude/Longitude` with a tile radius.
@@ -24,6 +25,17 @@ Install the required dependencies using pip:
 pip install -r requirements.txt
 
 ```
+To search by place name, you will need to supply an API key from the Geocoding API:
+
+- https://geocode.maps.co/
+
+The free tier offers 25,000 requests @ 5 requests/second, then limited to 1 request/second.
+
+Create a .env file with the following contents:
+
+```
+GEOCODE_API_KEY = {your_api_key}
+```
 
 ## Usage
 
@@ -38,7 +50,7 @@ python3 mapPuller.py
 This will prompt you to:
 - Choose a map series (11 options including modern OS maps and historical editions)
 - Select zoom level
-- Specify the map area (Latitude/Longitude with radius, or X/Y coordinates)
+- Specify the map area (Place name, Latitude/Longitude with radius, or X/Y coordinates)
 - Choose output format (PNG, WebP, JPEG)
 - Configure performance options
 
@@ -149,6 +161,8 @@ Map tile servers are expensive to run. Hitting them with too many concurrent req
 
 * Monitor your console output. If you start seeing `[WARNING] Rate Limited (429)`, immediately stop the script and lower the `--max-workers` argument.
 * Because the script features a 10-year historical fallback (checking ~132 months), querying an "empty" tile in the ocean will generate 132 back-to-back requests.
+
+The Geocoding API's free tier offers 25,000 requests @ 5 requests/second, then limited to 1 request/second. As the API is only called once per run, this should never be an issue.
 
 ### 2. Physical Memory Constraints
 
