@@ -1,3 +1,4 @@
+from dotenv import load_dotenv
 import os
 import requests
 import concurrent.futures
@@ -10,6 +11,8 @@ from collections import defaultdict
 from PIL import Image
 from tqdm import tqdm
 
+load_dotenv()
+
 def deg2num(lat_deg, lon_deg, zoom):
     """Converts Latitude/Longitude to standard slippy map X and Y tile coordinates."""
     lat_rad = math.radians(lat_deg)
@@ -17,6 +20,44 @@ def deg2num(lat_deg, lon_deg, zoom):
     x_tile = int((lon_deg + 180.0) / 360.0 * n)
     y_tile = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
     return x_tile, y_tile
+
+# --- Geocoding Function ---
+def geocode_place(place_name, api_key=None):
+    """Convert a place name to latitude and longitude using geocode.maps.co API."""
+    if not api_key:
+        api_key = os.environ.get("GEOCODE_API_KEY", "")
+        if not api_key:
+            print("\n⚠️  Geocoding API key not found.")
+            print("Set GEOCODE_API_KEY environment variable or provide one now.")
+            api_key = input("Enter your geocode.maps.co API key (or press Enter to use free tier): ").strip()
+    
+    try:
+        url = "https://geocode.maps.co/search"
+        params = {"q": place_name}
+        if api_key:
+            params["api_key"] = api_key
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            results = response.json()
+            if results:
+                result = results[0]
+                lat = float(result["lat"])
+                lon = float(result["lon"])
+                display_name = result.get("display_name", place_name)
+                print(f"\n✓ Found: {display_name}")
+                print(f"  Coordinates: {lat:.6f}, {lon:.6f}")
+                return lat, lon
+            else:
+                print(f"\n✗ No results found for '{place_name}'. Please try a different query.")
+                return None, None
+        else:
+            print(f"\n✗ Geocoding error: HTTP {response.status_code}")
+            return None, None
+    except Exception as e:
+        print(f"\n✗ Geocoding failed: {e}")
+        return None, None
 
 # --- Interactive Mode Functions ---
 def get_positive_int(prompt, default=None):
@@ -81,8 +122,8 @@ def interactive_mode():
          "1-inch Third Edition (1inch3rd)", 
          "Bartholomew England (bart)", 
          "OS 1:25,000 (os25k-1937-61)",
-         "OS 1 inch (os25k-1919-26)" ,
-         "OS 1 inch (os25k-1945-47)",
+         "OS 1 inch (os1in-1919-26)" ,
+         "OS 1 inch (os1in-1945-47)",
          "Agriculture Land Use (agri-1960-70)",
          "OS 50,000 (os50k-1974)"],
         default=1
@@ -92,11 +133,34 @@ def interactive_mode():
     # Input Method
     input_method = get_choice(
         "How do you want to specify the map area?",
-        ["Latitude/Longitude (with radius)", "X/Y Coordinates (direct tile range)"],
+        ["Place Name (e.g., 'Brighton, UK')", "Latitude/Longitude (with radius)", "X/Y Coordinates (direct tile range)"],
         default=1
     )
     
-    if input_method == "Latitude/Longitude (with radius)":
+    if input_method == "Place Name (e.g., 'Brighton, UK')":
+        place_name = input("\nEnter place name: ").strip()
+        if not place_name:
+            print("Place name cannot be empty. Using default coordinates.")
+            x_start = get_positive_int("Enter starting X coordinate", default=16354)
+            x_end = get_positive_int("Enter ending X coordinate", default=16374)
+            y_start = get_positive_int("Enter starting Y coordinate", default=10977)
+            y_end = get_positive_int("Enter ending Y coordinate", default=10997)
+            xy_args = ["--x-start", str(x_start), "--x-end", str(x_end),
+                       "--y-start", str(y_start), "--y-end", str(y_end)]
+        else:
+            lat, lon = geocode_place(place_name)
+            if lat is not None and lon is not None:
+                radius = get_positive_int("Enter radius in tiles", default=10)
+                xy_args = ["--lat", str(lat), "--lon", str(lon), "--radius", str(radius)]
+            else:
+                print("Geocoding failed. Using default coordinates.")
+                x_start = get_positive_int("Enter starting X coordinate", default=16354)
+                x_end = get_positive_int("Enter ending X coordinate", default=16374)
+                y_start = get_positive_int("Enter starting Y coordinate", default=10977)
+                y_end = get_positive_int("Enter ending Y coordinate", default=10997)
+                xy_args = ["--x-start", str(x_start), "--x-end", str(x_end),
+                           "--y-start", str(y_start), "--y-end", str(y_end)]
+    elif input_method == "Latitude/Longitude (with radius)":
         lat = get_float("Enter center Latitude (e.g., 50.82854)")
         lon = get_float("Enter center Longitude (e.g., -0.14001)")
         radius = get_positive_int("Enter radius in tiles", default=10)
@@ -148,6 +212,8 @@ parser = argparse.ArgumentParser(description="Scrape, download, and stitch OS ma
 
 parser.add_argument("--series", choices=["os25k", "os50k", "6inch2nd","1inch2nd","1inch3rd","bart","os25k-1937-61","os1in-1919-26","os1in-1945-47","agri-1960-70","os50k-1974"], default="os25k", help="Map series to download: os25k (1:25k), os50k (1:50k), 6inch2nd (6-inch) (default: os25k)")
 parser.add_argument("--zoom", type=int, default=15, help="Zoom level (default: 15)")
+parser.add_argument("--place", type=str, help="Place name to geocode (e.g., 'Brighton, UK'). Will be converted to lat/lon automatically.")
+parser.add_argument("--geocode-api-key", type=str, help="API key for geocode.maps.co (optional, uses free tier if not provided)")
 parser.add_argument("--lat", type=float, help="Center Latitude (e.g., 50.88074)")
 parser.add_argument("--lon", type=float, help="Center Longitude (e.g., -0.21368)")
 parser.add_argument("--radius", type=int, default=10, help="If using Lat/Lon, how many tiles in each direction to fetch (default: 10)")
@@ -177,63 +243,63 @@ FORMAT = args.format.upper()
 
 URL_1 = codecs.decode("gvyrf.yrvfher.zncf.bfvasen.arg", "rot13")
 URL_2 = codecs.decode("zncfrevrf-gvyrfrgf.f3.nznmbanjf.pbz", "rot13")
-URL_2 = codecs.decode("ncv.zncgvyre.pbz", "rot13")
-URL_2 = codecs.decode("trb.ayf.hx", "rot13")
+URL_3 = codecs.decode("ncv.zncgvyre.pbz", "rot13")
+URL_4 = codecs.decode("trb.ayf.hx", "rot13")
 
 # Series to URL mapping
 SERIES_CONFIG = {
     "os25k": {
-        "url_pattern": "https://{URL_1}/{map_date}/1_25k/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_1 + "/{map_date}/1_25k/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": True,
         "scale_label": "25k"
     },
     "os50k": {
-        "url_pattern": "https://{URL_1}/{map_date}/1_50k/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_1 + "/{map_date}/1_50k/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": True,
         "scale_label": "50k"
     },
     "6inch2nd": {
-        "url_pattern": "https://{URL_2}/os/6inchsecond/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_2 + "/os/6inchsecond/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": False,
         "scale_label": "6inch"
     },
     "1inch2nd": {
-        "url_pattern": "https://{URL_2}/os/1inch_revised/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_2 + "/os/1inch_revised/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": False,
         "scale_label": "1inch-v2"
     },
     "1inch3rd": {
-        "url_pattern": "https://{URL_2}/1inch_3rd_col_eng/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_2 + "/1inch_3rd_col_eng/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": False,
         "scale_label": "1inch-v3"
     },
     "bart": {
-        "url_pattern": "https://{URL_2}/bartholomew_england_wales_1920s/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_2 + "/bartholomew_england_wales_1920s/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": False,
         "scale_label": "1inch-v3"
     },
     "os25k-1937-61": {
-        "url_pattern": "https://{URL_3}/tiles/uk-osgb25k1937/{ZOOM_LEVEL}/{x}/{y}.jpg?key=7Y0Q1ck46BnB8cXXXg8X",
+        "url_pattern": "https://" + URL_3 + "/tiles/uk-osgb25k1937/{ZOOM_LEVEL}/{x}/{y}.jpg?key=7Y0Q1ck46BnB8cXXXg8X",
         "requires_date": False,
         "scale_label": "25k-1937-61"
     },
     "os1in-1919-26": {
-        "url_pattern": "https://{URL_2}/os/popular-england/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_2 + "/os/popular-england/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": False,
         "scale_label": "1in-1919-26"
     },
     "os1in-1945-47": {
-        "url_pattern": "https://{URL_2}/os/newpopular/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_2 + "/os/newpopular/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": False,
         "scale_label": "1in-1945-47"
     },
     "agri-1960-70": {
-        "url_pattern": "https://{URL_2}/one-inch-agricultural/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_2 + "/one-inch-agricultural/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": False,
         "scale_label": "agri-1960-70"
     },
     "os50k-1974": {
-        "url_pattern": "https://{URL_4}/mapdata3/os/50000_1974/{ZOOM_LEVEL}/{x}/{y}.png",
+        "url_pattern": "https://" + URL_4 + "/mapdata3/os/50000_1974/{ZOOM_LEVEL}/{x}/{y}.png",
         "requires_date": False,
         "scale_label": "os50k-1974"
     }
@@ -241,6 +307,15 @@ SERIES_CONFIG = {
 
 
 SCALE_LABEL = SERIES_CONFIG[SERIES]["scale_label"]
+
+# Handle place name geocoding if provided
+if args.place:
+    lat, lon = geocode_place(args.place, args.geocode_api_key)
+    if lat is None or lon is None:
+        print("Failed to geocode place name. Exiting.")
+        sys.exit(1)
+    args.lat = lat
+    args.lon = lon
 
 if args.lat is not None and args.lon is not None:
     center_x, center_y = deg2num(args.lat, args.lon, ZOOM_LEVEL)
