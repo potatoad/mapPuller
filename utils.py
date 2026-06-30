@@ -4,6 +4,7 @@ import threading
 from collections import defaultdict
 import requests
 from classes import Zoom
+from PIL import Image
 
 session = requests.Session()
 session.headers.update({
@@ -15,6 +16,7 @@ file_write_lock = threading.Lock()
 LOG_FILE = 'log.txt'
 TILE_DIR = 'tiles'
 OUTPUT_DIR = 'output'
+FORMAT = 'png'
 CHUNK_SIZE = 100
 TILE_SIZE = 256
 MAX_WORKERS = 10
@@ -96,7 +98,6 @@ def find_latest_tile(coords, zoom: Zoom, url_pattern: str):
     """Worker function: Checks cache, then checks dates backwards, logs URL if found, and returns."""
     x, y = coords
     z = zoom.zoom
-
     # Check if we already have this file on disk
     filepath = os.path.join(TILE_DIR, f"{x}_{y}_{z}.png")
     if os.path.exists(filepath):
@@ -107,20 +108,23 @@ def find_latest_tile(coords, zoom: Zoom, url_pattern: str):
 
     # If series doesn't require date, check URL directly
 
-    url = url_pattern.format(z, x, y)
+    url = url_pattern.format(z=z, x=x, y=y)
+    print(url)
     try:
         response = session.head(url, timeout=5)
         if response.status_code == 200:
             log_url_to_file(url)
             return (x, y, "FOUND")
         elif response.status_code == 429:
-            ...
+            print(f"[WARNING] Rate Limited (429) at x:{x} y:{y}. Server is blocking us.")
     except requests.exceptions.RequestException:
         pass
+    print(f"[MISSING] x:{x} y:{y}  -->  Not found.")
     return (x, y, None)
+'https://mapseries-tilesets.s3.amazonaws.com/bartholomew_england_wales_1920s/10/505/333.png'
+'https://mapseries-tilesets.s3.amazonaws.com/bartholomew_england_wales_1920s/16/32418/21295.png'
 
-
-def setup_directories(TILE_DIR=TILE_DIR, OUTPUT_DIR=TILE_DIR):
+def setup_directories(TILE_DIR=TILE_DIR, OUTPUT_DIR=OUTPUT_DIR):
     for directory in [TILE_DIR, OUTPUT_DIR]:
         if not os.path.exists(directory):
             os.makedirs(directory)
@@ -153,10 +157,12 @@ def parse_urls_from_log():
     return tiles_data
 
 
-def download_tile(tile_info):
+def download_tile(tile_info, zoom):
     """Downloads a single tile if it hasn't been downloaded yet."""
+    print(tile_info)
     x, y, url = tile_info
-    filepath = os.path.join(TILE_DIR, f"{x}_{y}_1_{SCALE_LABEL}.png")
+    z = zoom
+    filepath = os.path.join(TILE_DIR, f"{x}_{y}_{z}.png")
 
     # Because find_latest_tile logs a dummy URL for cached files, this check
     # triggers immediately and safely skips the requests.get() step.
@@ -194,22 +200,22 @@ def stitch_in_chunks(valid_tiles):
         width_px = ((max_x - min_x) + 1) * TILE_SIZE
         height_px = ((max_y - min_y) + 1) * TILE_SIZE
 
-        def generate_filename(args, SCALE_LABEL, ZOOM_LEVEL, cx, cy, FORMAT, X_CENTRE=None, Y_CENTRE=None):
-            if args.lat is not None and args.lon is not None:
-                return (
-                    f"map_lat{args.lat}_lon{args.lon}_1_{SCALE_LABEL}_z{ZOOM_LEVEL}_r{args.radius}_"
-                    f"X{cx}_Y{cy}.{FORMAT.lower()}"
-                )
-            else:
-                return (
-                    f"map_x{X_CENTRE}_y{Y_CENTRE}_1_{SCALE_LABEL}_z{ZOOM_LEVEL}_r{args.radius}_"
-                    f"X{cx}_Y{cy}.{FORMAT.lower()}"
-                )
-
-        filename = generate_filename(args, SCALE_LABEL, ZOOM_LEVEL, cx, cy, FORMAT,
-                                     X_CENTRE if 'X_CENTRE' in globals() else None,
-                                     Y_CENTRE if 'Y_CENTRE' in globals() else None)
-        output_path = os.path.join(OUTPUT_DIR, filename)
+        # def generate_filename(args, SCALE_LABEL, ZOOM_LEVEL, cx, cy, FORMAT, X_CENTRE=None, Y_CENTRE=None):
+        #     if args.lat is not None and args.lon is not None:
+        #         return (
+        #             f"map_lat{args.lat}_lon{args.lon}_1_{SCALE_LABEL}_z{ZOOM_LEVEL}_r{args.radius}_"
+        #             f"X{cx}_Y{cy}.{FORMAT.lower()}"
+        #         )
+        #     else:
+        #         return (
+        #             f"map_x{X_CENTRE}_y{Y_CENTRE}_1_{SCALE_LABEL}_z{ZOOM_LEVEL}_r{args.radius}_"
+        #             f"X{cx}_Y{cy}.{FORMAT.lower()}"
+        #         )
+        #
+        # filename = generate_filename(args, SCALE_LABEL, ZOOM_LEVEL, cx, cy, FORMAT,
+        #                              X_CENTRE if 'X_CENTRE' in globals() else None,
+        #                              Y_CENTRE if 'Y_CENTRE' in globals() else None)
+        output_path = os.path.join(OUTPUT_DIR, 'filename.png')
 
         canvas = Image.new('RGB' if FORMAT == "JPEG" else 'RGBA', (width_px, height_px), (0, 0, 0, 0))
 
@@ -222,6 +228,6 @@ def stitch_in_chunks(valid_tiles):
                         paste_y = (y - min_y) * TILE_SIZE
                         canvas.paste(tile_img, (paste_x, paste_y))
                 except Exception as e:
-                    tqdm.write(f"  -> Error pasting {filepath}: {e}")
+                    print(f"  -> Error pasting {filepath}: {e}")
 
         canvas.save(output_path, FORMAT, lossless=1 if FORMAT == "WEBP" else None)

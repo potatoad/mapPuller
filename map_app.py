@@ -1,8 +1,10 @@
 import concurrent.futures
 import os
+import asyncio
 
 from dotenv import load_dotenv
 from nicegui import ui, events
+from nicegui.functions.download import Download
 
 from utils import geocode_place, rect_coords_to_tiles, setup_directories, LOG_FILE, parse_urls_from_log, MAX_WORKERS, \
     find_latest_tile, download_tile, stitch_in_chunks
@@ -10,11 +12,8 @@ from tile_maps import tile_maps, URL_2, os50k
 from classes import Zoom, Tiles
 
 load_dotenv()
-
 zoom = Zoom()
-
 tiles = Tiles()
-
 draw_control = {
     'draw': {
         'polygon': False,
@@ -57,10 +56,20 @@ def handle_rect(e: events.GenericEventArguments):
 
     tiles.x_min, tiles.x_max, tiles.y_min, tiles.y_max = rect_coords_to_tiles(coords, zoom)
 
-    print(tiles.x_min, tiles.x_max, tiles.y_min, tiles.y_max)
+    # print(tiles.x_min, tiles.x_max, tiles.y_min, tiles.y_max)
 
 
-def handle_download():
+tile_search_progress: float = 0.0
+tile_download_progress: float = 0.0
+tile_stitch_progress: float = 0.0
+
+
+async def handle_download():
+    global tile_search_progress, tile_download_progress, tile_stitch_progress
+    tile_search_progress = 0.0
+    tile_download_progress = 0.0
+    tile_stitch_progress = 0.0
+
     setup_directories()
 
     with open(LOG_FILE, "w") as f:
@@ -72,33 +81,52 @@ def handle_download():
         for y in range(tiles.y_min, tiles.y_max + 1)
     )
 
-    total_tiles = (tiles.x_max - tiles.x_min) * (tiles.y_max - tiles.y_min)
-    print(f"Checking {total_tiles:,} coordinates concurrently...")
-    print(f"Results are saving in real-time to '{LOG_FILE}'\n")
+    total_tiles = ((tiles.x_max - tiles.x_min) + 1) * ((tiles.y_max - tiles.y_min) + 1)
 
+    print(f"Checking {total_tiles:,} coordinates concurrently...")
+
+    increment = 1.0 / total_tiles if total_tiles > 0 else 1.0
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        results = executor.map(find_latest_tile, tiles_to_check)
-        for result in results:
-            print(result)
+        futures = [executor.submit(find_latest_tile, coords, zoom, current_url_pattern) for coords in tiles_to_check]
+
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            print(f'Result: {result}')
+
+            tile_search_progress += increment
+            if tile_search_progress > 1.0:
+                tile_search_progress = 1.0
+
+            await asyncio.sleep(0.01)
+
+    tile_search_progress = 0.0
 
     tiles_1 = parse_urls_from_log()
     print(f"\nFound {len(tiles_1)} available tiles.")
 
-    # Step 2: Download Images (With Progress Bar)
     valid_tiles = []
     if tiles_1:
+        tile_download_progress = 0.0
         with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            results = executor.map(download_tile, tiles_1)
-            for result in results:
-                if result:
-                    valid_tiles.append(result)
+            futures = [executor.submit(download_tile, tile, zoom) for tile in tiles_1]
 
-    # Step 3: Group and Stitch
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                print(f'Result: {result}')
+
+                tile_download_progress += increment
+                if tile_download_progress > 1.0:
+                    tile_download_progress = 1.0
+
+                valid_tiles.append(result)
+                await asyncio.sleep(0.01)
+
+    tile_download_progress = 0.0
+
     if valid_tiles:
         stitch_in_chunks(valid_tiles)
 
-    # --- NEW: Step 4: Cleanup ---
     print("\nCleaning up temporary files...")
     if os.path.exists(LOG_FILE):
         try:
@@ -109,43 +137,68 @@ def handle_download():
 
     print("\nAll tasks complete!")
 
+    download_path = f'output/filename.png'
 
-ui.context.client.content.classes("h-screen")
+    ui.download(download_path)
+
+
+
+ui.page_title('MapApp')
+ui.context.client.content.classes('p-0 flex-col !max-w-full h-[calc(100vh-58px)]')
 
 lat: float = 53
 lon: float = -1.5
 place: str = ''
+current_url_pattern: str = tile_maps[0].url
+current_min_zoom: int = tile_maps[0].min_zoom
+current_max_zoom: int = tile_maps[0].max_zoom
 
-with ui.row():
+with ui.header().classes(replace='row items-center') as header:
+    ui.button(on_click=lambda: left_drawer.toggle(), icon='menu').props('flat color=white')
+    ui.button(text='Download', on_click=lambda: handle_download(), icon='download').props('flat color=white')
+
+with ui.footer(value=False) as footer:
+    ui.label('Footer')
+
+with ui.left_drawer().classes('bg-blue-100') as left_drawer:
     ui.markdown('''
-        # Map App
-        A dodgy app to download OS maps you haven't paid for.
-    ''')
+            # Map App
+            A dodgy app to download OS maps you haven't paid for.
+        ''')
 
-    with ui.column():
-        with ui.dropdown_button('Select Map', auto_close=True):
-            for tile_map in tile_maps:
-                ui.item(tile_map.name, on_click=lambda tm=tile_map: (
-                    os_map.clear_layers(),
-                    print(tm.name),
-                    os_map.tile_layer(
-                        url_template=tm.url,
-                        options={'minZoom': tm.min_zoom, 'maxZoom': tm.max_zoom}
-                    )
-                ))
+    with ui.dropdown_button('Select Map', auto_close=True):
+        for tile_map in tile_maps:
+            ui.item(tile_map.name, on_click=lambda tm=tile_map: (
+                os_map.clear_layers(),
+                globals().update(current_url_pattern=tm.url),
+                print(tm.name),
+                os_map.tile_layer(
+                    url_template=tm.url,
+                    options={'minZoom': tm.min_zoom, 'maxZoom': tm.max_zoom}
+                )
+            ))
 
-        with ui.input(placeholder='Search...').props('rounded outlined dense').on('keydown', handle_search_key) as i:
-            ui.button(icon='search', on_click=handle_search).props('flat dense')
+    with ui.input(placeholder='Search...').props('rounded outlined dense').on('keydown', handle_search_key) as i:
+        ui.button(icon='search', on_click=handle_search).props('flat dense')
 
-        ui.slider(min=13, max=16).props('label-always').bind_value(zoom, 'zoom')
+    ui.button('Download', on_click=handle_download).props('rounded outlined dense')
 
-ui.button('Download', on_click=handle_download).props('rounded outlined dense')
-
-os_map = ui.leaflet(center=(lat, lon), zoom=7, draw_control=draw_control).classes('grow')
+os_map = ui.leaflet(center=(lat, lon), zoom=10, draw_control=draw_control).classes('grow')
 os_map.clear_layers()
-os_map.tile_layer(url_template=('https://' + URL_2 + r'/bartholomew_england_wales_1920s/{z}/{x}/{y}.png'),
-                  options={'maxZoom': 16, 'minZoom': 7}, )
-
+os_map.tile_layer(url_template=(current_url_pattern),
+                  options={'minZoom': current_min_zoom, 'maxZoom': current_max_zoom})
 os_map.on('draw:created', handle_rect)
+
+
+with ui.page_sticky(position='bottom-right', x_offset=20, y_offset=20):
+    ui.button(on_click=footer.toggle, icon='contact_support').props('fab')
+
+# Progress bars remain at the bottom of the flex column
+(ui.linear_progress(show_value=False, size='20px').bind_value_from(globals(),
+                                                                   'tile_search_progress').bind_visibility_from(
+    globals(), 'tile_search_progress'))
+ui.linear_progress(show_value=False, size='20px').bind_value_from(globals(),
+                                                                  'tile_download_progress').bind_visibility_from(
+    globals(), 'tile_download_progress')
 
 ui.run()

@@ -2,3 +2,5 @@ downloaded_tiles/
 stitched_chunks/
 successful_tile_urls.txt
 .env
+/output/
+/tiles/
